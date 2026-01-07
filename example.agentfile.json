@@ -1,0 +1,85 @@
+{
+  "$schema": "./agentfile.schema.json",
+  "name": "helpful-assistant",
+  "description": "A general-purpose assistant with calculator, weather, and search capabilities",
+  "version": "1.0.0",
+  "model": "openai/gpt-4o-mini",
+  "system_prompt": "You are a helpful assistant. When answering questions:\n1. Use available tools when they would help provide accurate information\n2. Explain your reasoning step by step\n3. If you're unsure, say so rather than guessing\n4. Be concise but thorough",
+  "tools": [
+    {
+      "name": "calculator",
+      "description": "Evaluate a mathematical expression. Supports basic arithmetic (+, -, *, /), exponents (**), and common functions (sqrt, sin, cos, tan, log, abs).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "The mathematical expression to evaluate, e.g., '2 + 2' or 'sqrt(16) * 3'"
+          }
+        },
+        "required": ["expression"]
+      }
+    },
+    {
+      "name": "get_weather",
+      "description": "Get the current weather for a location. Returns temperature, conditions, and humidity.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The city name, e.g., 'San Francisco' or 'London, UK'"
+          },
+          "units": {
+            "type": "string",
+            "enum": ["celsius", "fahrenheit"],
+            "description": "Temperature units to use"
+          }
+        },
+        "required": ["location"]
+      }
+    },
+    {
+      "name": "search_web",
+      "description": "Search the web for information. Returns a list of relevant results with titles and snippets.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query"
+          },
+          "num_results": {
+            "type": "integer",
+            "description": "Number of results to return (1-10)"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get_current_time",
+      "description": "Get the current date and time, optionally for a specific timezone.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone name, e.g., 'America/New_York' or 'Europe/London'. Defaults to UTC."
+          }
+        },
+        "required": []
+      }
+    }
+  ],
+  "settings": {
+    "max_iterations": 10,
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "timeout_seconds": 60
+  },
+  "metadata": {
+    "author": "ScratchAgents Team",
+    "tags": ["general", "demo", "educational"]
+  }
+}
