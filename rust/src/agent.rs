@@ -112,7 +112,7 @@ impl ReactAgent {
             if assistant_message.has_tool_calls() {
                 if let Some(tool_calls) = &assistant_message.tool_calls {
                     for tool_call in tool_calls {
-                        let info = self.execute_tool_call(tool_call);
+                        let info = self.execute_tool_call(tool_call).await;
                         tool_calls_info.push(info);
                     }
                 }
@@ -134,7 +134,7 @@ impl ReactAgent {
     }
 
     /// Execute a single tool call and add result to messages.
-    fn execute_tool_call(&mut self, tool_call: &ToolCall) -> ToolCallInfo {
+    async fn execute_tool_call(&mut self, tool_call: &ToolCall) -> ToolCallInfo {
         let name = &tool_call.function.name;
         let arguments = &tool_call.function.arguments;
 
@@ -143,8 +143,8 @@ impl ReactAgent {
             callback(name, arguments);
         }
 
-        // Execute the tool
-        let result = execute_tool(name, arguments);
+        // Execute the tool (async - may make HTTP requests)
+        let result = execute_tool(name, arguments).await;
 
         // Notify callback
         if let Some(callback) = &self.on_tool_result {

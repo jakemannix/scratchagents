@@ -152,8 +152,8 @@ export class ReactAgent {
     // Notify callback
     this.onToolCall?.({ name: toolName, arguments: args });
 
-    // Execute the tool
-    const result = executeTool(toolName, args);
+    // Execute the tool (async - may make HTTP requests)
+    const result = await executeTool(toolName, args);
 
     // Notify callback
     this.onToolResult?.({ name: toolName, result });

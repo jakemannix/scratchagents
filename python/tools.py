@@ -5,16 +5,18 @@ This module defines the tools available to our ReAct agent. Each tool has:
 1. A definition (name, description, parameters as JSON Schema)
 2. An executor function that actually performs the action
 
-Tools are intentionally simple - some are mock implementations to demonstrate
-the pattern without requiring external API keys.
+Tools use real APIs where possible:
+- Weather: Open-Meteo API (free, no API key required)
+- Search: DuckDuckGo Instant Answer API (free, no API key required)
 """
 
 import json
 import math
-import random
 from datetime import datetime, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
+
+import requests
 
 
 # ============================================================================
@@ -39,7 +41,7 @@ CALCULATOR_TOOL = {
 
 GET_WEATHER_TOOL = {
     "name": "get_weather",
-    "description": "Get the current weather for a location. Returns temperature, conditions, humidity, and wind speed. Note: This is a mock implementation for demonstration.",
+    "description": "Get the current weather for a location. Returns temperature, conditions, humidity, and wind speed. Uses the Open-Meteo API for real weather data.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -59,17 +61,13 @@ GET_WEATHER_TOOL = {
 
 SEARCH_WEB_TOOL = {
     "name": "search_web",
-    "description": "Search the web for information and return relevant results with titles, URLs, and snippets. Note: This is a mock implementation for demonstration.",
+    "description": "Search the web for information using DuckDuckGo. Returns instant answers, abstracts, and related topics.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
                 "description": "The search query"
-            },
-            "num_results": {
-                "type": "integer",
-                "description": "Number of results to return (1-10, default: 3)"
             }
         },
         "required": ["query"]
@@ -192,105 +190,210 @@ def execute_calculator(expression: str) -> dict:
 
 def execute_get_weather(location: str, units: str = "celsius") -> dict:
     """
-    Get mock weather data for a location.
+    Get real weather data for a location using Open-Meteo API.
 
-    This is a demonstration implementation that returns realistic-looking
-    but fake weather data. In a real application, you'd call a weather API.
+    This uses two API calls:
+    1. Geocoding API to convert location name to coordinates
+    2. Weather API to get current conditions
 
     Args:
-        location: City name
+        location: City name (e.g., "San Francisco", "London, UK")
         units: 'celsius' or 'fahrenheit'
 
     Returns:
         Dictionary with weather information
     """
-    # Generate deterministic "random" weather based on location name
-    # This makes the demo reproducible
-    seed = sum(ord(c) for c in location.lower())
-    random.seed(seed)
+    try:
+        # Step 1: Geocode the location to get coordinates
+        geocode_url = "https://geocoding-api.open-meteo.com/v1/search"
+        geocode_params = {
+            "name": location,
+            "count": 1,
+            "language": "en",
+            "format": "json"
+        }
 
-    # Generate weather data
-    temp_c = random.randint(-10, 35)
-    humidity = random.randint(30, 90)
-    wind_speed = random.randint(0, 30)
+        geocode_response = requests.get(geocode_url, params=geocode_params, timeout=10)
+        geocode_response.raise_for_status()
+        geocode_data = geocode_response.json()
 
-    conditions = random.choice([
-        "Sunny", "Partly cloudy", "Cloudy", "Overcast",
-        "Light rain", "Rain", "Thunderstorm",
-        "Snow", "Fog", "Clear"
-    ])
+        if "results" not in geocode_data or len(geocode_data["results"]) == 0:
+            return {"error": f"Location not found: {location}"}
 
-    # Convert temperature if needed
-    if units == "fahrenheit":
-        temperature = round(temp_c * 9/5 + 32)
-        temp_unit = "°F"
-    else:
-        temperature = temp_c
-        temp_unit = "°C"
+        place = geocode_data["results"][0]
+        lat = place["latitude"]
+        lon = place["longitude"]
+        resolved_name = place.get("name", location)
+        country = place.get("country", "")
 
-    return {
-        "location": location,
-        "temperature": temperature,
-        "units": temp_unit,
-        "conditions": conditions,
-        "humidity": f"{humidity}%",
-        "wind_speed": f"{wind_speed} km/h",
-        "note": "This is mock data for demonstration purposes"
+        # Step 2: Get weather data
+        weather_url = "https://api.open-meteo.com/v1/forecast"
+        temp_unit = "fahrenheit" if units == "fahrenheit" else "celsius"
+        weather_params = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+            "temperature_unit": temp_unit,
+            "wind_speed_unit": "kmh",
+            "timezone": "auto"
+        }
+
+        weather_response = requests.get(weather_url, params=weather_params, timeout=10)
+        weather_response.raise_for_status()
+        weather_data = weather_response.json()
+
+        current = weather_data.get("current", {})
+
+        # Map WMO weather codes to descriptions
+        weather_code = current.get("weather_code", 0)
+        conditions = _weather_code_to_description(weather_code)
+
+        temp_symbol = "°F" if units == "fahrenheit" else "°C"
+
+        return {
+            "location": f"{resolved_name}, {country}" if country else resolved_name,
+            "coordinates": {"latitude": lat, "longitude": lon},
+            "temperature": current.get("temperature_2m"),
+            "feels_like": current.get("apparent_temperature"),
+            "units": temp_symbol,
+            "conditions": conditions,
+            "humidity": f"{current.get('relative_humidity_2m', 'N/A')}%",
+            "wind_speed": f"{current.get('wind_speed_10m', 'N/A')} km/h",
+            "source": "Open-Meteo API"
+        }
+
+    except requests.exceptions.Timeout:
+        return {"error": "Weather API request timed out"}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Weather API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"Failed to get weather: {e}"}
+
+
+def _weather_code_to_description(code: int) -> str:
+    """Convert WMO weather code to human-readable description."""
+    weather_codes = {
+        0: "Clear sky",
+        1: "Mainly clear",
+        2: "Partly cloudy",
+        3: "Overcast",
+        45: "Foggy",
+        48: "Depositing rime fog",
+        51: "Light drizzle",
+        53: "Moderate drizzle",
+        55: "Dense drizzle",
+        56: "Light freezing drizzle",
+        57: "Dense freezing drizzle",
+        61: "Slight rain",
+        63: "Moderate rain",
+        65: "Heavy rain",
+        66: "Light freezing rain",
+        67: "Heavy freezing rain",
+        71: "Slight snow",
+        73: "Moderate snow",
+        75: "Heavy snow",
+        77: "Snow grains",
+        80: "Slight rain showers",
+        81: "Moderate rain showers",
+        82: "Violent rain showers",
+        85: "Slight snow showers",
+        86: "Heavy snow showers",
+        95: "Thunderstorm",
+        96: "Thunderstorm with slight hail",
+        99: "Thunderstorm with heavy hail",
     }
+    return weather_codes.get(code, f"Unknown (code {code})")
 
 
-def execute_search_web(query: str, num_results: int = 3) -> dict:
+def execute_search_web(query: str) -> dict:
     """
-    Return mock search results.
+    Search the web using DuckDuckGo Instant Answer API.
 
-    This is a demonstration implementation that returns fake but
-    realistic-looking search results. In a real application, you'd
-    call a search API like Google, Bing, or Brave.
+    This API provides:
+    - Instant answers (calculations, definitions, etc.)
+    - Abstract summaries from Wikipedia and other sources
+    - Related topics
 
     Args:
         query: Search query string
-        num_results: Number of results to return (1-10)
 
     Returns:
         Dictionary with search results
     """
-    num_results = max(1, min(10, num_results))
+    try:
+        # DuckDuckGo Instant Answer API
+        url = "https://api.duckduckgo.com/"
+        params = {
+            "q": query,
+            "format": "json",
+            "no_html": 1,
+            "skip_disambig": 1
+        }
 
-    # Generate mock results based on the query
-    mock_results = [
-        {
-            "title": f"Understanding {query} - Comprehensive Guide",
-            "url": f"https://example.com/guide/{query.replace(' ', '-').lower()}",
-            "snippet": f"A complete guide to {query}. Learn everything you need to know about this topic with our in-depth tutorial and examples..."
-        },
-        {
-            "title": f"{query} - Wikipedia",
-            "url": f"https://en.wikipedia.org/wiki/{query.replace(' ', '_')}",
-            "snippet": f"{query} refers to a concept or topic that has been widely discussed. This article provides an overview of the key aspects..."
-        },
-        {
-            "title": f"How to {query}: Step-by-Step Tutorial",
-            "url": f"https://tutorial-site.com/{query.replace(' ', '-').lower()}",
-            "snippet": f"Follow our step-by-step instructions to learn about {query}. Perfect for beginners and experts alike..."
-        },
-        {
-            "title": f"Top 10 Things to Know About {query}",
-            "url": f"https://blog.example.com/top-10-{query.replace(' ', '-').lower()}",
-            "snippet": f"Discover the most important facts about {query}. Our experts have compiled this list to help you understand..."
-        },
-        {
-            "title": f"{query} FAQ - Common Questions Answered",
-            "url": f"https://faq.example.com/{query.replace(' ', '-').lower()}",
-            "snippet": f"Got questions about {query}? Find answers to the most frequently asked questions in our comprehensive FAQ..."
-        },
-    ]
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-    return {
-        "query": query,
-        "num_results": num_results,
-        "results": mock_results[:num_results],
-        "note": "These are mock results for demonstration purposes"
-    }
+        results = []
+
+        # Add abstract (usually from Wikipedia)
+        if data.get("Abstract"):
+            results.append({
+                "type": "abstract",
+                "title": data.get("Heading", query),
+                "text": data["Abstract"],
+                "url": data.get("AbstractURL", ""),
+                "source": data.get("AbstractSource", "")
+            })
+
+        # Add instant answer if available
+        if data.get("Answer"):
+            results.append({
+                "type": "instant_answer",
+                "text": data["Answer"],
+                "answer_type": data.get("AnswerType", "")
+            })
+
+        # Add definition if available
+        if data.get("Definition"):
+            results.append({
+                "type": "definition",
+                "text": data["Definition"],
+                "source": data.get("DefinitionSource", ""),
+                "url": data.get("DefinitionURL", "")
+            })
+
+        # Add related topics
+        related_topics = data.get("RelatedTopics", [])
+        for topic in related_topics[:5]:  # Limit to 5 related topics
+            if isinstance(topic, dict) and topic.get("Text"):
+                results.append({
+                    "type": "related",
+                    "text": topic["Text"],
+                    "url": topic.get("FirstURL", "")
+                })
+
+        # If no results, provide a helpful message
+        if not results:
+            return {
+                "query": query,
+                "message": "No instant answers found. Try a more specific query or search directly on a search engine.",
+                "results": [],
+                "source": "DuckDuckGo Instant Answer API"
+            }
+
+        return {
+            "query": query,
+            "results": results,
+            "source": "DuckDuckGo Instant Answer API"
+        }
+
+    except requests.exceptions.Timeout:
+        return {"error": "Search API request timed out"}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Search API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"Search failed: {e}"}
 
 
 def execute_get_current_time(timezone_name: str = "UTC") -> dict:
@@ -335,10 +438,7 @@ TOOL_EXECUTORS: dict[str, Callable] = {
         args["location"],
         args.get("units", "celsius")
     ),
-    "search_web": lambda args: execute_search_web(
-        args["query"],
-        args.get("num_results", 3)
-    ),
+    "search_web": lambda args: execute_search_web(args["query"]),
     "get_current_time": lambda args: execute_get_current_time(
         args.get("timezone", "UTC")
     ),

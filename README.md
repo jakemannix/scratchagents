@@ -195,12 +195,12 @@ Content-Type: application/json
 
 Each implementation includes these example tools:
 
-| Tool | Description |
-|------|-------------|
-| `calculator` | Evaluate mathematical expressions |
-| `get_weather` | Get weather for a location (mock) |
-| `search_web` | Search the web (mock) |
-| `get_current_time` | Get current date/time |
+| Tool | Description | API |
+|------|-------------|-----|
+| `calculator` | Evaluate mathematical expressions | Local |
+| `get_weather` | Get real weather for a location | [Open-Meteo](https://open-meteo.com/) (free, no API key) |
+| `search_web` | Search the web for instant answers | [DuckDuckGo](https://duckduckgo.com/api) (free, no API key) |
+| `get_current_time` | Get current date/time | Local |
 
 ## Learning Path
 

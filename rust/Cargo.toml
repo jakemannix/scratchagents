@@ -30,6 +30,9 @@ chrono-tz = "0.8"
 # Math expression parsing
 meval = "0.2"
 
+# URL encoding
+urlencoding = "2.1"
+
 # Colored terminal output
 colored = "2.1"
 

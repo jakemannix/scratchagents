@@ -3,6 +3,10 @@
  *
  * This module defines the tools available to our ReAct agent.
  * Each tool has a definition (for the LLM) and an executor function.
+ *
+ * Tools use real APIs where possible:
+ * - Weather: Open-Meteo API (free, no API key required)
+ * - Search: DuckDuckGo Instant Answer API (free, no API key required)
  */
 
 import type { Tool } from "./openrouter";
@@ -31,7 +35,7 @@ export const CALCULATOR_TOOL: Tool = {
 export const GET_WEATHER_TOOL: Tool = {
   name: "get_weather",
   description:
-    "Get the current weather for a location. Returns temperature, conditions, and humidity. Note: Mock data for demonstration.",
+    "Get the current weather for a location. Returns temperature, conditions, and humidity. Uses the Open-Meteo API for real weather data.",
   parameters: {
     type: "object",
     properties: {
@@ -52,17 +56,13 @@ export const GET_WEATHER_TOOL: Tool = {
 export const SEARCH_WEB_TOOL: Tool = {
   name: "search_web",
   description:
-    "Search the web for information. Returns titles, URLs, and snippets. Note: Mock data for demonstration.",
+    "Search the web for information using DuckDuckGo. Returns instant answers, abstracts, and related topics.",
   parameters: {
     type: "object",
     properties: {
       query: {
         type: "string",
         description: "The search query",
-      },
-      num_results: {
-        type: "integer",
-        description: "Number of results (1-10, default: 3)",
       },
     },
     required: ["query"],
@@ -292,89 +292,193 @@ function executeCalculator(args: { expression: string }): string {
   }
 }
 
-function executeGetWeather(args: { location: string; units?: string }): string {
-  const { location, units = "celsius" } = args;
-
-  // Generate deterministic "random" weather based on location
-  const seed = location
-    .toLowerCase()
-    .split("")
-    .reduce((acc, c) => acc + c.charCodeAt(0), 0);
-
-  const random = (min: number, max: number) => {
-    const x = Math.sin(seed) * 10000;
-    return Math.floor((x - Math.floor(x)) * (max - min + 1)) + min;
+/**
+ * Map WMO weather codes to human-readable descriptions.
+ */
+function weatherCodeToDescription(code: number): string {
+  const weatherCodes: Record<number, string> = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow",
+    73: "Moderate snow",
+    75: "Heavy snow",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail",
   };
-
-  const tempC = random(-10, 35);
-  const humidity = random(30, 90);
-  const windSpeed = random(0, 30);
-
-  const conditions = [
-    "Sunny",
-    "Partly cloudy",
-    "Cloudy",
-    "Overcast",
-    "Light rain",
-    "Rain",
-    "Thunderstorm",
-    "Snow",
-    "Fog",
-    "Clear",
-  ][seed % 10];
-
-  const temperature = units === "fahrenheit" ? Math.round(tempC * 9 / 5 + 32) : tempC;
-  const tempUnit = units === "fahrenheit" ? "°F" : "°C";
-
-  return JSON.stringify({
-    location,
-    temperature,
-    units: tempUnit,
-    conditions,
-    humidity: `${humidity}%`,
-    wind_speed: `${windSpeed} km/h`,
-    note: "Mock data for demonstration",
-  });
+  return weatherCodes[code] || `Unknown (code ${code})`;
 }
 
-function executeSearchWeb(args: { query: string; num_results?: number }): string {
-  const { query, num_results = 3 } = args;
-  const numResults = Math.max(1, Math.min(10, num_results));
+/**
+ * Get real weather data using Open-Meteo API.
+ */
+async function executeGetWeather(args: { location: string; units?: string }): Promise<string> {
+  const { location, units = "celsius" } = args;
 
-  const mockResults = [
-    {
-      title: `Understanding ${query} - Comprehensive Guide`,
-      url: `https://example.com/guide/${query.replace(/\s+/g, "-").toLowerCase()}`,
-      snippet: `A complete guide to ${query}. Learn everything you need to know...`,
-    },
-    {
-      title: `${query} - Wikipedia`,
-      url: `https://en.wikipedia.org/wiki/${query.replace(/\s+/g, "_")}`,
-      snippet: `${query} refers to a concept or topic that has been widely discussed...`,
-    },
-    {
-      title: `How to ${query}: Step-by-Step Tutorial`,
-      url: `https://tutorial-site.com/${query.replace(/\s+/g, "-").toLowerCase()}`,
-      snippet: `Follow our step-by-step instructions to learn about ${query}...`,
-    },
-    {
-      title: `Top 10 Things About ${query}`,
-      url: `https://blog.example.com/top-10-${query.replace(/\s+/g, "-").toLowerCase()}`,
-      snippet: `Discover the most important facts about ${query}...`,
-    },
-    {
-      title: `${query} FAQ - Common Questions`,
-      url: `https://faq.example.com/${query.replace(/\s+/g, "-").toLowerCase()}`,
-      snippet: `Got questions about ${query}? Find answers here...`,
-    },
-  ];
+  try {
+    // Step 1: Geocode the location
+    const geocodeUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
+    geocodeUrl.searchParams.set("name", location);
+    geocodeUrl.searchParams.set("count", "1");
+    geocodeUrl.searchParams.set("language", "en");
+    geocodeUrl.searchParams.set("format", "json");
 
-  return JSON.stringify({
-    query,
-    num_results: numResults,
-    results: mockResults.slice(0, numResults),
-    note: "Mock results for demonstration",
-  });
+    const geocodeResponse = await fetch(geocodeUrl.toString());
+    if (!geocodeResponse.ok) {
+      throw new Error(`Geocoding failed: ${geocodeResponse.status}`);
+    }
+
+    const geocodeData = await geocodeResponse.json();
+
+    if (!geocodeData.results || geocodeData.results.length === 0) {
+      return JSON.stringify({ error: `Location not found: ${location}` });
+    }
+
+    const place = geocodeData.results[0];
+    const lat = place.latitude;
+    const lon = place.longitude;
+    const resolvedName = place.name || location;
+    const country = place.country || "";
+
+    // Step 2: Get weather data
+    const weatherUrl = new URL("https://api.open-meteo.com/v1/forecast");
+    weatherUrl.searchParams.set("latitude", lat.toString());
+    weatherUrl.searchParams.set("longitude", lon.toString());
+    weatherUrl.searchParams.set("current", "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m");
+    weatherUrl.searchParams.set("temperature_unit", units === "fahrenheit" ? "fahrenheit" : "celsius");
+    weatherUrl.searchParams.set("wind_speed_unit", "kmh");
+    weatherUrl.searchParams.set("timezone", "auto");
+
+    const weatherResponse = await fetch(weatherUrl.toString());
+    if (!weatherResponse.ok) {
+      throw new Error(`Weather API failed: ${weatherResponse.status}`);
+    }
+
+    const weatherData = await weatherResponse.json();
+    const current = weatherData.current || {};
+
+    const weatherCode = current.weather_code || 0;
+    const conditions = weatherCodeToDescription(weatherCode);
+    const tempSymbol = units === "fahrenheit" ? "°F" : "°C";
+
+    return JSON.stringify({
+      location: country ? `${resolvedName}, ${country}` : resolvedName,
+      coordinates: { latitude: lat, longitude: lon },
+      temperature: current.temperature_2m,
+      feels_like: current.apparent_temperature,
+      units: tempSymbol,
+      conditions,
+      humidity: `${current.relative_humidity_2m ?? "N/A"}%`,
+      wind_speed: `${current.wind_speed_10m ?? "N/A"} km/h`,
+      source: "Open-Meteo API",
+    });
+  } catch (error) {
+    return JSON.stringify({ error: `Failed to get weather: ${error}` });
+  }
+}
+
+/**
+ * Search the web using DuckDuckGo Instant Answer API.
+ */
+async function executeSearchWeb(args: { query: string }): Promise<string> {
+  const { query } = args;
+
+  try {
+    // DuckDuckGo Instant Answer API
+    const url = new URL("https://api.duckduckgo.com/");
+    url.searchParams.set("q", query);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("no_html", "1");
+    url.searchParams.set("skip_disambig", "1");
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(`Search API failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const results: Array<Record<string, string>> = [];
+
+    // Add abstract (usually from Wikipedia)
+    if (data.Abstract) {
+      results.push({
+        type: "abstract",
+        title: data.Heading || query,
+        text: data.Abstract,
+        url: data.AbstractURL || "",
+        source: data.AbstractSource || "",
+      });
+    }
+
+    // Add instant answer if available
+    if (data.Answer) {
+      results.push({
+        type: "instant_answer",
+        text: data.Answer,
+        answer_type: data.AnswerType || "",
+      });
+    }
+
+    // Add definition if available
+    if (data.Definition) {
+      results.push({
+        type: "definition",
+        text: data.Definition,
+        source: data.DefinitionSource || "",
+        url: data.DefinitionURL || "",
+      });
+    }
+
+    // Add related topics
+    const relatedTopics = data.RelatedTopics || [];
+    for (const topic of relatedTopics.slice(0, 5)) {
+      if (topic && typeof topic === "object" && topic.Text) {
+        results.push({
+          type: "related",
+          text: topic.Text,
+          url: topic.FirstURL || "",
+        });
+      }
+    }
+
+    // If no results, provide a helpful message
+    if (results.length === 0) {
+      return JSON.stringify({
+        query,
+        message: "No instant answers found. Try a more specific query or search directly on a search engine.",
+        results: [],
+        source: "DuckDuckGo Instant Answer API",
+      });
+    }
+
+    return JSON.stringify({
+      query,
+      results,
+      source: "DuckDuckGo Instant Answer API",
+    });
+  } catch (error) {
+    return JSON.stringify({ error: `Search failed: ${error}` });
+  }
 }
 
 function executeGetCurrentTime(args: { timezone?: string }): string {
@@ -415,27 +519,28 @@ function executeGetCurrentTime(args: { timezone?: string }): string {
   }
 }
 
-// Tool executor registry
-type ToolExecutor = (args: Record<string, unknown>) => string;
+// Tool executor registry - now supports both sync and async executors
+type ToolExecutor = (args: Record<string, unknown>) => string | Promise<string>;
 
 const TOOL_EXECUTORS = new Map<string, ToolExecutor>([
   ["calculator", (args) => executeCalculator(args as { expression: string })],
   ["get_weather", (args) => executeGetWeather(args as { location: string; units?: string })],
-  ["search_web", (args) => executeSearchWeb(args as { query: string; num_results?: number })],
+  ["search_web", (args) => executeSearchWeb(args as { query: string })],
   ["get_current_time", (args) => executeGetCurrentTime(args as { timezone?: string })],
 ]);
 
 /**
  * Execute a tool by name with the given arguments.
+ * Returns a Promise since some tools (weather, search) are async.
  */
-export function executeTool(name: string, args: Record<string, unknown>): string {
+export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   const executor = TOOL_EXECUTORS.get(name);
   if (!executor) {
     return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 
   try {
-    return executor(args);
+    return await executor(args);
   } catch (error) {
     return JSON.stringify({ error: `Tool execution failed: ${error}` });
   }

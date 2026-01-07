@@ -1,11 +1,15 @@
 package com.react.agent.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.react.agent.model.Tool;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
+import java.net.URI;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -16,11 +20,16 @@ import java.util.function.Function;
  *
  * Handles the execution of tools called by the agent.
  * Each tool is registered with a name and an executor function.
+ *
+ * Tools use real APIs where possible:
+ * - Weather: Open-Meteo API (free, no API key required)
+ * - Search: DuckDuckGo Instant Answer API (free, no API key required)
  */
 @Service
 public class ToolExecutor {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final RestTemplate restTemplate = new RestTemplate();
     private final Map<String, Function<Map<String, Object>, Map<String, Object>>> executors = new HashMap<>();
     private final List<Tool> availableTools = new ArrayList<>();
 
@@ -48,11 +57,11 @@ public class ToolExecutor {
             this::executeCalculator
         );
 
-        // Weather tool (mock)
+        // Weather tool (real API)
         registerTool(
             new Tool(
                 "get_weather",
-                "Get the current weather for a location. Returns temperature, conditions, humidity. Note: Mock data for demo.",
+                "Get the current weather for a location. Returns temperature, conditions, humidity. Uses Open-Meteo API for real weather data.",
                 new Tool.Parameters(
                     "object",
                     Map.of(
@@ -65,16 +74,15 @@ public class ToolExecutor {
             this::executeGetWeather
         );
 
-        // Web search tool (mock)
+        // Web search tool (real API)
         registerTool(
             new Tool(
                 "search_web",
-                "Search the web for information. Returns titles, URLs, and snippets. Note: Mock data for demo.",
+                "Search the web for information using DuckDuckGo. Returns instant answers, abstracts, and related topics.",
                 new Tool.Parameters(
                     "object",
                     Map.of(
-                        "query", new Tool.Property("string", "The search query", null, null),
-                        "num_results", new Tool.Property("integer", "Number of results (1-10)", null, 3)
+                        "query", new Tool.Property("string", "The search query", null, null)
                     ),
                     List.of("query")
                 )
@@ -250,6 +258,9 @@ public class ToolExecutor {
         return Double.parseDouble(expr.substring(start, pos[0]));
     }
 
+    /**
+     * Get real weather data using Open-Meteo API.
+     */
     private Map<String, Object> executeGetWeather(Map<String, Object> args) {
         String location = (String) args.get("location");
         String units = (String) args.getOrDefault("units", "celsius");
@@ -258,68 +269,197 @@ public class ToolExecutor {
             return Map.of("error", "Location is required");
         }
 
-        // Generate deterministic mock weather based on location
-        int seed = location.toLowerCase().chars().sum();
-        Random random = new Random(seed);
+        try {
+            // Step 1: Geocode the location
+            URI geocodeUri = UriComponentsBuilder
+                .fromHttpUrl("https://geocoding-api.open-meteo.com/v1/search")
+                .queryParam("name", location)
+                .queryParam("count", 1)
+                .queryParam("language", "en")
+                .queryParam("format", "json")
+                .build()
+                .toUri();
 
-        int tempC = random.nextInt(45) - 10; // -10 to 35
-        int humidity = random.nextInt(60) + 30; // 30 to 90
-        int windSpeed = random.nextInt(30); // 0 to 30
+            String geocodeResponse = restTemplate.getForObject(geocodeUri, String.class);
+            JsonNode geocodeData = objectMapper.readTree(geocodeResponse);
 
-        String[] conditions = {"Sunny", "Partly cloudy", "Cloudy", "Overcast",
-            "Light rain", "Rain", "Thunderstorm", "Snow", "Fog", "Clear"};
-        String condition = conditions[seed % conditions.length];
+            if (!geocodeData.has("results") || geocodeData.get("results").isEmpty()) {
+                return Map.of("error", "Location not found: " + location);
+            }
 
-        int temperature = units.equals("fahrenheit") ? (int) (tempC * 9.0 / 5 + 32) : tempC;
-        String tempUnit = units.equals("fahrenheit") ? "°F" : "°C";
+            JsonNode place = geocodeData.get("results").get(0);
+            double lat = place.get("latitude").asDouble();
+            double lon = place.get("longitude").asDouble();
+            String resolvedName = place.has("name") ? place.get("name").asText() : location;
+            String country = place.has("country") ? place.get("country").asText() : "";
 
-        return Map.of(
-            "location", location,
-            "temperature", temperature,
-            "units", tempUnit,
-            "conditions", condition,
-            "humidity", humidity + "%",
-            "wind_speed", windSpeed + " km/h",
-            "note", "Mock data for demonstration"
-        );
+            // Step 2: Get weather data
+            String tempUnit = units.equals("fahrenheit") ? "fahrenheit" : "celsius";
+            URI weatherUri = UriComponentsBuilder
+                .fromHttpUrl("https://api.open-meteo.com/v1/forecast")
+                .queryParam("latitude", lat)
+                .queryParam("longitude", lon)
+                .queryParam("current", "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m")
+                .queryParam("temperature_unit", tempUnit)
+                .queryParam("wind_speed_unit", "kmh")
+                .queryParam("timezone", "auto")
+                .build()
+                .toUri();
+
+            String weatherResponse = restTemplate.getForObject(weatherUri, String.class);
+            JsonNode weatherData = objectMapper.readTree(weatherResponse);
+            JsonNode current = weatherData.get("current");
+
+            int weatherCode = current.has("weather_code") ? current.get("weather_code").asInt() : 0;
+            String conditions = weatherCodeToDescription(weatherCode);
+            String tempSymbol = units.equals("fahrenheit") ? "°F" : "°C";
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("location", country.isEmpty() ? resolvedName : resolvedName + ", " + country);
+            result.put("coordinates", Map.of("latitude", lat, "longitude", lon));
+            result.put("temperature", current.has("temperature_2m") ? current.get("temperature_2m").asDouble() : null);
+            result.put("feels_like", current.has("apparent_temperature") ? current.get("apparent_temperature").asDouble() : null);
+            result.put("units", tempSymbol);
+            result.put("conditions", conditions);
+            result.put("humidity", (current.has("relative_humidity_2m") ? current.get("relative_humidity_2m").asInt() : "N/A") + "%");
+            result.put("wind_speed", (current.has("wind_speed_10m") ? current.get("wind_speed_10m").asDouble() : "N/A") + " km/h");
+            result.put("source", "Open-Meteo API");
+
+            return result;
+
+        } catch (Exception e) {
+            return Map.of("error", "Failed to get weather: " + e.getMessage());
+        }
     }
 
+    /**
+     * Map WMO weather codes to human-readable descriptions.
+     */
+    private String weatherCodeToDescription(int code) {
+        return switch (code) {
+            case 0 -> "Clear sky";
+            case 1 -> "Mainly clear";
+            case 2 -> "Partly cloudy";
+            case 3 -> "Overcast";
+            case 45 -> "Foggy";
+            case 48 -> "Depositing rime fog";
+            case 51 -> "Light drizzle";
+            case 53 -> "Moderate drizzle";
+            case 55 -> "Dense drizzle";
+            case 56 -> "Light freezing drizzle";
+            case 57 -> "Dense freezing drizzle";
+            case 61 -> "Slight rain";
+            case 63 -> "Moderate rain";
+            case 65 -> "Heavy rain";
+            case 66 -> "Light freezing rain";
+            case 67 -> "Heavy freezing rain";
+            case 71 -> "Slight snow";
+            case 73 -> "Moderate snow";
+            case 75 -> "Heavy snow";
+            case 77 -> "Snow grains";
+            case 80 -> "Slight rain showers";
+            case 81 -> "Moderate rain showers";
+            case 82 -> "Violent rain showers";
+            case 85 -> "Slight snow showers";
+            case 86 -> "Heavy snow showers";
+            case 95 -> "Thunderstorm";
+            case 96 -> "Thunderstorm with slight hail";
+            case 99 -> "Thunderstorm with heavy hail";
+            default -> "Unknown (code " + code + ")";
+        };
+    }
+
+    /**
+     * Search the web using DuckDuckGo Instant Answer API.
+     */
     private Map<String, Object> executeSearchWeb(Map<String, Object> args) {
         String query = (String) args.get("query");
-        int numResults = args.containsKey("num_results")
-            ? ((Number) args.get("num_results")).intValue()
-            : 3;
-        numResults = Math.max(1, Math.min(10, numResults));
 
         if (query == null || query.isEmpty()) {
             return Map.of("error", "Query is required");
         }
 
-        String slug = query.toLowerCase().replaceAll("\\s+", "-");
-        List<Map<String, String>> results = new ArrayList<>();
+        try {
+            URI searchUri = UriComponentsBuilder
+                .fromHttpUrl("https://api.duckduckgo.com/")
+                .queryParam("q", query)
+                .queryParam("format", "json")
+                .queryParam("no_html", 1)
+                .queryParam("skip_disambig", 1)
+                .build()
+                .toUri();
 
-        results.add(Map.of(
-            "title", "Understanding " + query + " - Guide",
-            "url", "https://example.com/guide/" + slug,
-            "snippet", "A complete guide to " + query + ". Learn everything..."
-        ));
-        results.add(Map.of(
-            "title", query + " - Wikipedia",
-            "url", "https://en.wikipedia.org/wiki/" + query.replace(" ", "_"),
-            "snippet", query + " refers to a concept that has been widely discussed..."
-        ));
-        results.add(Map.of(
-            "title", "How to " + query + ": Tutorial",
-            "url", "https://tutorial-site.com/" + slug,
-            "snippet", "Step-by-step instructions to learn about " + query + "..."
-        ));
+            String response = restTemplate.getForObject(searchUri, String.class);
+            JsonNode data = objectMapper.readTree(response);
 
-        return Map.of(
-            "query", query,
-            "num_results", numResults,
-            "results", results.subList(0, Math.min(numResults, results.size())),
-            "note", "Mock results for demonstration"
-        );
+            List<Map<String, String>> results = new ArrayList<>();
+
+            // Add abstract (usually from Wikipedia)
+            if (data.has("Abstract") && !data.get("Abstract").asText().isEmpty()) {
+                results.add(Map.of(
+                    "type", "abstract",
+                    "title", data.has("Heading") ? data.get("Heading").asText() : query,
+                    "text", data.get("Abstract").asText(),
+                    "url", data.has("AbstractURL") ? data.get("AbstractURL").asText() : "",
+                    "source", data.has("AbstractSource") ? data.get("AbstractSource").asText() : ""
+                ));
+            }
+
+            // Add instant answer if available
+            if (data.has("Answer") && !data.get("Answer").asText().isEmpty()) {
+                results.add(Map.of(
+                    "type", "instant_answer",
+                    "text", data.get("Answer").asText(),
+                    "answer_type", data.has("AnswerType") ? data.get("AnswerType").asText() : ""
+                ));
+            }
+
+            // Add definition if available
+            if (data.has("Definition") && !data.get("Definition").asText().isEmpty()) {
+                results.add(Map.of(
+                    "type", "definition",
+                    "text", data.get("Definition").asText(),
+                    "source", data.has("DefinitionSource") ? data.get("DefinitionSource").asText() : "",
+                    "url", data.has("DefinitionURL") ? data.get("DefinitionURL").asText() : ""
+                ));
+            }
+
+            // Add related topics
+            if (data.has("RelatedTopics")) {
+                JsonNode relatedTopics = data.get("RelatedTopics");
+                int count = 0;
+                for (JsonNode topic : relatedTopics) {
+                    if (count >= 5) break;
+                    if (topic.has("Text") && !topic.get("Text").asText().isEmpty()) {
+                        results.add(Map.of(
+                            "type", "related",
+                            "text", topic.get("Text").asText(),
+                            "url", topic.has("FirstURL") ? topic.get("FirstURL").asText() : ""
+                        ));
+                        count++;
+                    }
+                }
+            }
+
+            // If no results, provide a helpful message
+            if (results.isEmpty()) {
+                return Map.of(
+                    "query", query,
+                    "message", "No instant answers found. Try a more specific query or search directly on a search engine.",
+                    "results", List.of(),
+                    "source", "DuckDuckGo Instant Answer API"
+                );
+            }
+
+            return Map.of(
+                "query", query,
+                "results", results,
+                "source", "DuckDuckGo Instant Answer API"
+            );
+
+        } catch (Exception e) {
+            return Map.of("error", "Search failed: " + e.getMessage());
+        }
     }
 
     private Map<String, Object> executeGetCurrentTime(Map<String, Object> args) {
