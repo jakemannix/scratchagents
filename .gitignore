@@ -1,3 +1,14 @@
+# =========================
+# Environment & Secrets
+# =========================
+.env
+.env.local
+.env.*.local
+
+# =========================
+# Python
+# =========================
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -205,3 +216,51 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# =========================
+# TypeScript / Node.js
+# =========================
+node_modules/
+dist/
+*.tsbuildinfo
+.npm
+.eslintcache
+.parcel-cache/
+.cache/
+
+# =========================
+# Java
+# =========================
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+*.log
+hs_err_pid*
+replay_pid*
+
+# =========================
+# Rust
+# =========================
+/rust/target/
+**/*.rs.bk
+Cargo.lock
+
+# =========================
+# IDE / Editor
+# =========================
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

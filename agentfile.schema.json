@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/scratchagents/agentfile.schema.json",
+  "title": "Agent File",
+  "description": "Configuration schema for ReAct chatbot agents",
+  "type": "object",
+  "required": ["name", "model"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique identifier for the agent",
+      "pattern": "^[a-z0-9-]+$",
+      "examples": ["my-assistant", "code-helper"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of what the agent does"
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version of this agent configuration",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "default": "1.0.0"
+    },
+    "model": {
+      "type": "string",
+      "description": "The LLM model to use via OpenRouter (e.g., 'openai/gpt-4o-mini', 'anthropic/claude-3-haiku')",
+      "examples": [
+        "openai/gpt-4o-mini",
+        "openai/gpt-4o",
+        "anthropic/claude-3-haiku",
+        "anthropic/claude-3-sonnet",
+        "meta-llama/llama-3-70b-instruct"
+      ]
+    },
+    "system_prompt": {
+      "type": "string",
+      "description": "The system prompt that defines the agent's behavior and personality",
+      "default": "You are a helpful assistant. Use the available tools to help answer the user's questions. Always explain your reasoning."
+    },
+    "tools": {
+      "type": "array",
+      "description": "List of tools available to the agent",
+      "items": {
+        "$ref": "#/$defs/tool"
+      },
+      "default": []
+    },
+    "settings": {
+      "type": "object",
+      "description": "Runtime settings for the agent",
+      "properties": {
+        "max_iterations": {
+          "type": "integer",
+          "description": "Maximum number of tool-use iterations before forcing a response",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 10
+        },
+        "temperature": {
+          "type": "number",
+          "description": "Sampling temperature for the LLM (0 = deterministic, 2 = very random)",
+          "minimum": 0,
+          "maximum": 2,
+          "default": 0.7
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Maximum tokens in the LLM response",
+          "minimum": 1,
+          "default": 4096
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Timeout for each LLM API call in seconds",
+          "minimum": 1,
+          "default": 60
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata about the agent",
+      "properties": {
+        "author": {
+          "type": "string",
+          "description": "Author of this agent configuration"
+        },
+        "repository": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to the source repository"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tags for categorizing the agent"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "required": ["name", "description", "parameters"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for the tool (used in function calls)",
+          "pattern": "^[a-z_][a-z0-9_]*$"
+        },
+        "description": {
+          "type": "string",
+          "description": "Clear description of what the tool does - this is shown to the LLM"
+        },
+        "parameters": {
+          "$ref": "#/$defs/jsonSchema",
+          "description": "JSON Schema describing the tool's input parameters"
+        }
+      },
+      "additionalProperties": false
+    },
+    "jsonSchema": {
+      "type": "object",
+      "description": "A JSON Schema object describing tool parameters",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["object"],
+          "description": "Must be 'object' for tool parameters"
+        },
+        "properties": {
+          "type": "object",
+          "description": "Map of parameter names to their schemas",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["string", "number", "integer", "boolean", "array", "object"]
+              },
+              "description": {
+                "type": "string"
+              },
+              "enum": {
+                "type": "array"
+              },
+              "default": {},
+              "items": {
+                "type": "object"
+              }
+            },
+            "required": ["type", "description"]
+          }
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of required parameter names"
+        }
+      },
+      "required": ["type", "properties"]
+    }
+  }
+}

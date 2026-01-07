@@ -1,0 +1,8 @@
+# ReAct Agent Dependencies
+# These are the minimal dependencies needed for the agent
+
+# HTTP client for API calls
+requests>=2.28.0
+
+# For colored terminal output (optional but nice)
+colorama>=0.4.6
